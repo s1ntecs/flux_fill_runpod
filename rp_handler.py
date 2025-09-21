@@ -11,10 +11,10 @@ from runpod.serverless.utils.rp_download import file as rp_file
 from runpod.serverless.modules.rp_logger import RunPodLogger
 
 # --------------------------- КОНСТАНТЫ ----------------------------------- #
-MAX_SEED = np.iinfo(np.int32).max
+MAX_SEED = np.iinfo(np.int16).max
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16 if DEVICE == "cuda" else torch.float32
-MAX_STEPS = 250
+MAX_STEPS = 50
 
 TARGET_RES = 1024
 
@@ -63,9 +63,9 @@ def compute_work_resolution(w, h, max_side=1024):
     new_w = int(w * scale)
     new_h = int(h * scale)
     # выравниваем до кратных 8
-    new_w = round_to_multiple(new_w, 8)
-    new_h = round_to_multiple(new_h, 8)
-    return max(new_w, 8), max(new_h, 8)
+    new_w = round_to_multiple(new_w, 16)
+    new_h = round_to_multiple(new_h, 16)
+    return max(new_w, 8), max(new_h, 16)
 
 
 def prepare_mask(mask_img: Image.Image,
@@ -142,8 +142,11 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         seed = int(payload.get(
             "seed",
             random.randint(0, MAX_SEED)))
-        generator = torch.Generator(
-            device="cpu").manual_seed(seed)
+        # generator = torch.Generator(
+        #     device="cpu").manual_seed(seed)
+        generator = (torch.Generator(
+            device=DEVICE) if DEVICE == "cuda" else torch.Generator()
+                     ).manual_seed(seed)
 
         image_pil = url_to_pil(image_url)
 
