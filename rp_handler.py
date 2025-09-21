@@ -11,7 +11,7 @@ from runpod.serverless.utils.rp_download import file as rp_file
 from runpod.serverless.modules.rp_logger import RunPodLogger
 
 # --------------------------- КОНСТАНТЫ ----------------------------------- #
-MAX_SEED = np.iinfo(np.int16).max
+MAX_SEED = np.iinfo(np.int32).max
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16 if DEVICE == "cuda" else torch.float32
 MAX_STEPS = 50
@@ -53,19 +53,15 @@ def pil_to_b64(img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def round_to_multiple(x, m=8):
-    return (x // m) * m
+def round_to_multiple(x, m=16):
+    return max(m, (x // m) * m)
 
 
 def compute_work_resolution(w, h, max_side=1024):
-    # масштабируем так, чтобы большая сторона <= max_side
     scale = min(max_side / max(w, h), 1.0)
-    new_w = int(w * scale)
-    new_h = int(h * scale)
-    # выравниваем до кратных 8
-    new_w = round_to_multiple(new_w, 16)
-    new_h = round_to_multiple(new_h, 16)
-    return max(new_w, 8), max(new_h, 16)
+    new_w = round_to_multiple(int(w * scale), 16)
+    new_h = round_to_multiple(int(h * scale), 16)
+    return new_w, new_h
 
 
 def prepare_mask(mask_img: Image.Image,
@@ -76,8 +72,9 @@ def prepare_mask(mask_img: Image.Image,
                  hard_binarize_before: bool = True) -> Image.Image:
     """
     Подготовка маски для инпейнта.
-    Белое (255) = перерисовать, чёрное (0) = сохранить.  ⟵ поведение Diffusers/Flux Fill
-    radius > 0 -> диляция (расширяем белое), radius < 0 -> эрозия (сужаем белое).
+    Белое (255) = перерисовать, чёрное (0) = сохранить.  ⟵
+    поведение Diffusers/Flux Fill radius > 0 -> диляция 
+    (расширяем белое), radius < 0 -> эрозия (сужаем белое).
     blur > 0 -> смягчаем край маски гауссовым блюром (перо).
 
     Параметры:
@@ -85,7 +82,7 @@ def prepare_mask(mask_img: Image.Image,
       radius : пиксели; >0 dilate, <0 erode, 0 — без изменений
       blur   : пиксели GaussianBlur для мягкого края
       threshold: порог предварительной бинаризации
-      hard_binarize_before: сначала почистить маску до 0/255, затем применять морфологию
+      hard_binarize_before: сначала почистить маску до 0/255, затем применять
     """
     m = mask_img.convert("L").resize(size, Image.Resampling.LANCZOS)
 
@@ -103,7 +100,7 @@ def prepare_mask(mask_img: Image.Image,
         else:
             # ЭРОЗИЯ белого: сужаем область для перерисовки
             m = m.filter(ImageFilter.MinFilter(k))
-    # 3) Мягкий край (перо): после морфологии НЕ перебинаризуем — оставляем полутона
+    # 3) Мягкий край (перо): после морфологии НЕ перебинаризуем — оставляем
     if blur and float(blur) > 0.0:
         m = m.filter(ImageFilter.GaussianBlur(float(blur)))
     return m
@@ -168,17 +165,19 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         # mask_image = mask_image.resize((work_w, work_h),
         #                                Image.Resampling.LANCZOS)
         # ------------------ генерация ---------------- #
-        images = PIPELINE(
-            prompt=prompt,
-            image=image_pil,
-            mask_image=mask_image,
-            guidance_scale=guidance_scale,
-            num_inference_steps=steps,
-            generator=generator,
-            width=work_w,
-            height=work_h,
-            max_sequence_length=int(payload.get("max_sequence_length", 512)),
-        ).images
+        with torch.inference_mode():
+            images = PIPELINE(
+                prompt=prompt,
+                image=image_pil,
+                mask_image=mask_image,
+                guidance_scale=guidance_scale,
+                num_inference_steps=steps,
+                generator=generator,
+                width=work_w,
+                height=work_h,
+                max_sequence_length=int(payload.get(
+                    "max_sequence_length", 512)),
+            ).images
 
         return {
             "images_base64": [pil_to_b64(i) for i in images],
